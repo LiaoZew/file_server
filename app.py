@@ -140,6 +140,19 @@ class FileServer:
     .file-picker {{ display: inline-flex; align-items: center; gap: 6px; }}
     .file-picker input[type=file] {{ display: none; }}
     .file-picker label {{ padding: 6px 10px; border: 1px solid #aaa; border-radius: 4px; cursor: pointer; }}
+    #dropZone {{
+      margin-top: 8px;
+      padding: 16px;
+      border: 2px dashed #999;
+      border-radius: 8px;
+      background: #fafafa;
+      color: #333;
+      text-align: center;
+    }}
+    #dropZone.dragover {{
+      border-color: #2563eb;
+      background: #eef4ff;
+    }}
   </style>
 </head>
 <body>
@@ -166,6 +179,7 @@ class FileServer:
     </span>
     <button onclick="uploadFiles()">Upload Selected</button>
   </div>
+  <div id="dropZone">拖拽文件或文件夹到这里上传（保留目录结构）</div>
   <div class="row">
     <label>Token:</label>
     <input id="token" value="{token_hint}" placeholder="optional token" />
@@ -200,6 +214,8 @@ class FileServer:
     const logEl = document.getElementById("log");
     const pathEl = document.getElementById("path");
     const msgListEl = document.getElementById("msgList");
+    const dropZone = document.getElementById("dropZone");
+    let droppedFiles = [];
 
     function log(msg) {{
       logEl.textContent = `[${{new Date().toLocaleTimeString()}}] ${{msg}}\\n` + logEl.textContent;
@@ -245,6 +261,84 @@ class FileServer:
       if (!a) return b || "";
       if (!b) return a;
       return (a + "/" + b).replace(/\\/+/g, "/").replace(/\/+/g, "/");
+    }}
+
+    function setupDropZone() {{
+      const stop = (e) => {{
+        e.preventDefault();
+        e.stopPropagation();
+      }};
+      ["dragenter", "dragover", "dragleave", "drop"].forEach((name) => {{
+        dropZone.addEventListener(name, stop);
+      }});
+      ["dragenter", "dragover"].forEach((name) => {{
+        dropZone.addEventListener(name, () => dropZone.classList.add("dragover"));
+      }});
+      ["dragleave", "drop"].forEach((name) => {{
+        dropZone.addEventListener(name, () => dropZone.classList.remove("dragover"));
+      }});
+      dropZone.addEventListener("drop", async (e) => {{
+        try {{
+          const items = await collectDroppedItems(e.dataTransfer);
+          droppedFiles = droppedFiles.concat(items);
+          log(`Drop queued: +${{items.length}} files, pending=${{droppedFiles.length}}`);
+        }} catch (err) {{
+          log("Drop parse failed: " + err);
+        }}
+      }});
+    }}
+
+    function readEntryFile(entry) {{
+      return new Promise((resolve, reject) => {{
+        entry.file(resolve, reject);
+      }});
+    }}
+
+    function readDirEntries(reader) {{
+      return new Promise((resolve, reject) => {{
+        reader.readEntries(resolve, reject);
+      }});
+    }}
+
+    async function walkEntry(entry, basePath = "") {{
+      if (entry.isFile) {{
+        const file = await readEntryFile(entry);
+        const rel = joinPath(basePath, entry.name);
+        return [{{ file, rel }}];
+      }}
+      if (!entry.isDirectory) return [];
+      const dirBase = joinPath(basePath, entry.name);
+      const reader = entry.createReader();
+      const all = [];
+      while (true) {{
+        const batch = await readDirEntries(reader);
+        if (!batch.length) break;
+        for (const child of batch) {{
+          const children = await walkEntry(child, dirBase);
+          all.push(...children);
+        }}
+      }}
+      return all;
+    }}
+
+    async function collectDroppedItems(dataTransfer) {{
+      const out = [];
+      const items = dataTransfer?.items ? Array.from(dataTransfer.items) : [];
+      if (items.length && items[0].webkitGetAsEntry) {{
+        for (const item of items) {{
+          const entry = item.webkitGetAsEntry();
+          if (!entry) continue;
+          const got = await walkEntry(entry, "");
+          out.push(...got);
+        }}
+      }} else {{
+        const files = Array.from(dataTransfer?.files || []);
+        for (const f of files) {{
+          const rel = f.webkitRelativePath || f.name;
+          out.push({{ file: f, rel }});
+        }}
+      }}
+      return out;
     }}
 
     async function refreshList() {{
@@ -419,6 +513,9 @@ class FileServer:
         const rel = f.webkitRelativePath || f.name;
         files.push({{ file: f, rel: joinPath(currentPath, rel) }});
       }}
+      for (const f of droppedFiles) {{
+        files.push({{ file: f.file, rel: joinPath(currentPath, f.rel) }});
+      }}
       if (!files.length) {{
         log("No files selected");
         return;
@@ -453,6 +550,7 @@ class FileServer:
       log(`Finished. success=${{done}}, failed=${{failed}}, total=${{files.length}}, time=${{sec.toFixed(1)}}s`);
       document.getElementById("fileInput").value = "";
       document.getElementById("folderInput").value = "";
+      droppedFiles = [];
       refreshList();
     }}
 
@@ -524,6 +622,7 @@ class FileServer:
       log("Server is shutting down...");
     }}
 
+    setupDropZone();
     refreshList();
   </script>
 </body>
