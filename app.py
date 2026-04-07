@@ -8,7 +8,7 @@ import threading
 import time
 import zipfile
 from pathlib import Path
-from typing import Generator, Optional
+from typing import Callable, Generator, Optional
 
 import flet as ft
 import uvicorn
@@ -81,11 +81,18 @@ class UploadCompleteRequest(BaseModel):
 
 
 class FileServer:
-    def __init__(self, root_dir: Path, token: str = "", max_workers: int = 8):
+    def __init__(
+        self,
+        root_dir: Path,
+        token: str = "",
+        max_workers: int = 8,
+        shutdown_callback: Optional[Callable[[], None]] = None,
+    ):
         self.root_dir = root_dir.resolve()
         self.session_dir = self.root_dir / ".upload_sessions"
         self.token = token.strip()
         self.max_workers = max_workers
+        self.shutdown_callback = shutdown_callback
         self._msg_lock = threading.Lock()
         self._messages: list[dict] = []
         ensure_dir(self.root_dir)
@@ -144,6 +151,7 @@ class FileServer:
     <button onclick="goUp()">Up</button>
     <button onclick="refreshList()">Refresh</button>
     <button onclick="openMessageDialog()">消息对话框</button>
+    <button onclick="shutdownServer()">关闭服务器</button>
     <input id="mkdirName" placeholder="new folder" />
     <button onclick="mkdir()">Create Folder</button>
   </div>
@@ -465,6 +473,19 @@ class FileServer:
       await loadMessages();
     }}
 
+    async function shutdownServer() {{
+      if (!confirm("确认关闭服务器？")) return;
+      const resp = await fetch(`/server/shutdown${{tokenQuery()}}`, {{
+        method: "POST",
+        headers: tokenHeaders()
+      }});
+      if (!resp.ok) {{
+        log("Shutdown failed: " + (await resp.text()));
+        return;
+      }}
+      log("Server is shutting down...");
+    }}
+
     refreshList();
   </script>
 </body>
@@ -522,6 +543,18 @@ class FileServer:
                 if len(self._messages) > 200:
                     self._messages = self._messages[-200:]
             return {"ok": True, "item": item}
+
+        @app.post("/server/shutdown")
+        def server_shutdown(_: None = auth) -> dict:
+            if self.shutdown_callback is None:
+                raise HTTPException(status_code=400, detail="Shutdown is not enabled")
+
+            def _do_shutdown():
+                time.sleep(0.2)
+                self.shutdown_callback()
+
+            threading.Thread(target=_do_shutdown, daemon=True).start()
+            return {"ok": True}
 
         @app.delete("/delete")
         def delete_file(path: str, _: None = auth) -> dict:
@@ -824,6 +857,11 @@ class ServerController:
         def run():
             self.server.run()
 
+        def _shutdown():
+            if self.server is not None:
+                self.server.should_exit = True
+
+        self.file_server.shutdown_callback = _shutdown
         self.thread = threading.Thread(target=run, daemon=True)
         self.thread.start()
 

@@ -43,7 +43,11 @@ def main() -> None:
     args = parser.parse_args()
 
     root_dir = Path(args.root).resolve()
-    fs = FileServer(root_dir=root_dir, token=args.token)
+    config = uvicorn.Config(app=None, host=args.host, port=args.port, log_level="warning")
+    server = uvicorn.Server(config)
+
+    fs = FileServer(root_dir=root_dir, token=args.token, shutdown_callback=lambda: setattr(server, "should_exit", True))
+    server.config.app = fs.app
 
     print(f"[WebServer] Root: {root_dir}")
     print(f"[WebServer] Local: http://127.0.0.1:{args.port}")
@@ -53,7 +57,7 @@ def main() -> None:
     print(f"[WebServer] Public hint: http://<public-ip-or-domain>:{args.port}")
     print("[WebServer] Web UI: open / in browser")
 
-    uvicorn.run(fs.app, host=args.host, port=args.port, log_level="warning")
+    server.run()
 
 
 if __name__ == "__main__":
