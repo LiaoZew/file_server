@@ -186,7 +186,7 @@ class FileServer:
       <button onclick="closeMessageDialog()">关闭</button>
     </div>
     <div class="row">
-      <input id="msgInput" placeholder="输入消息内容" style="min-width: 360px;" />
+      <textarea id="msgInput" placeholder="输入消息内容(支持回车换行)" style="min-width: 360px; min-height: 100px;"></textarea>
       <button onclick="sendMessage()">发送</button>
     </div>
     <div id="msgList" style="max-height: 240px; overflow: auto; border: 1px solid #ddd; padding: 8px;"></div>
@@ -486,6 +486,7 @@ class FileServer:
         const row = document.createElement("div");
         row.style.borderBottom = "1px solid #eee";
         row.style.padding = "6px 0";
+        row.style.whiteSpace = "pre-wrap";
         row.textContent = `[${{m.time}}] ${{m.sender}}: ${{m.text}}`;
         msgListEl.appendChild(row);
       }}
