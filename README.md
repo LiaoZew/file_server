@@ -69,6 +69,7 @@ http://<ip>:8080/
 - 文件删除（仅文件）
 - 文件夹删除（递归删除）
 - 文件夹打包下载（zip）
+- 消息对话框（发送/查看消息）
 
 ## 4. 断点续传与性能
 
@@ -88,6 +89,8 @@ http://<ip>:8080/
 - `POST /upload/complete`（合并分块）
 - `DELETE /delete?path=<rel_file_path>`（删除文件）
 - `DELETE /delete-folder?path=<rel_dir_path>`（删除文件夹，递归）
+- `GET /messages`（获取消息）
+- `POST /messages`（发送消息）
 - `GET /download?path=<rel_file_path>`（支持 Range）
 - `GET /download-folder?path=<rel_dir_path>`（zip 下载）
 

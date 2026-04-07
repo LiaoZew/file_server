@@ -86,6 +86,8 @@ class FileServer:
         self.session_dir = self.root_dir / ".upload_sessions"
         self.token = token.strip()
         self.max_workers = max_workers
+        self._msg_lock = threading.Lock()
+        self._messages: list[dict] = []
         ensure_dir(self.root_dir)
         ensure_dir(self.session_dir)
 
@@ -141,6 +143,7 @@ class FileServer:
   <div class="row">
     <button onclick="goUp()">Up</button>
     <button onclick="refreshList()">Refresh</button>
+    <button onclick="openMessageDialog()">消息对话框</button>
     <input id="mkdirName" placeholder="new folder" />
     <button onclick="mkdir()">Create Folder</button>
   </div>
@@ -167,12 +170,26 @@ class FileServer:
   </table>
   <h4>Logs</h4>
   <div id="log"></div>
+  <dialog id="msgDialog">
+    <h3>消息对话框</h3>
+    <div class="row">
+      <input id="msgSender" placeholder="发送者(可选)" />
+      <button onclick="loadMessages()">刷新消息</button>
+      <button onclick="closeMessageDialog()">关闭</button>
+    </div>
+    <div class="row">
+      <input id="msgInput" placeholder="输入消息内容" style="min-width: 360px;" />
+      <button onclick="sendMessage()">发送</button>
+    </div>
+    <div id="msgList" style="max-height: 240px; overflow: auto; border: 1px solid #ddd; padding: 8px;"></div>
+  </dialog>
   <script>
     let currentPath = "";
     const chunkSize = 4 * 1024 * 1024;
     const parallel = 4;
     const logEl = document.getElementById("log");
     const pathEl = document.getElementById("path");
+    const msgListEl = document.getElementById("msgList");
 
     function log(msg) {{
       logEl.textContent = `[${{new Date().toLocaleTimeString()}}] ${{msg}}\\n` + logEl.textContent;
@@ -394,6 +411,60 @@ class FileServer:
       refreshList();
     }}
 
+    function openMessageDialog() {{
+      const dlg = document.getElementById("msgDialog");
+      if (dlg && dlg.showModal) {{
+        dlg.showModal();
+      }}
+      loadMessages();
+    }}
+
+    function closeMessageDialog() {{
+      const dlg = document.getElementById("msgDialog");
+      if (dlg) dlg.close();
+    }}
+
+    async function loadMessages() {{
+      const resp = await fetch(`/messages${{tokenQuery()}}`, {{ headers: tokenHeaders() }});
+      if (!resp.ok) {{
+        log("Load messages failed: " + (await resp.text()));
+        return;
+      }}
+      const data = await resp.json();
+      const items = data.items || [];
+      if (!items.length) {{
+        msgListEl.textContent = "暂无消息";
+        return;
+      }}
+      msgListEl.innerHTML = "";
+      for (const m of items) {{
+        const row = document.createElement("div");
+        row.style.borderBottom = "1px solid #eee";
+        row.style.padding = "6px 0";
+        row.textContent = `[${{m.time}}] ${{m.sender}}: ${{m.text}}`;
+        msgListEl.appendChild(row);
+      }}
+    }}
+
+    async function sendMessage() {{
+      const textEl = document.getElementById("msgInput");
+      const senderEl = document.getElementById("msgSender");
+      const text = (textEl.value || "").trim();
+      if (!text) return;
+      const sender = (senderEl.value || "").trim() || "anonymous";
+      const resp = await fetch(`/messages${{tokenQuery()}}`, {{
+        method: "POST",
+        headers: {{ "Content-Type": "application/json", ...tokenHeaders() }},
+        body: JSON.stringify({{ sender, text }})
+      }});
+      if (!resp.ok) {{
+        log("Send message failed: " + (await resp.text()));
+        return;
+      }}
+      textEl.value = "";
+      await loadMessages();
+    }}
+
     refreshList();
   </script>
 </body>
@@ -427,6 +498,30 @@ class FileServer:
 
             entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
             return JSONResponse({"path": path, "entries": entries})
+
+        @app.get("/messages")
+        def get_messages(_: None = auth) -> dict:
+            with self._msg_lock:
+                items = list(self._messages[-100:])
+            return {"items": items}
+
+        @app.post("/messages")
+        async def post_message(payload: dict, _: None = auth) -> dict:
+            text = (payload.get("text") or "").strip()
+            sender = (payload.get("sender") or "anonymous").strip()[:32] or "anonymous"
+            if not text:
+                raise HTTPException(status_code=400, detail="text is required")
+            item = {
+                "id": int(time.time() * 1000),
+                "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                "sender": sender,
+                "text": text[:1000],
+            }
+            with self._msg_lock:
+                self._messages.append(item)
+                if len(self._messages) > 200:
+                    self._messages = self._messages[-200:]
+            return {"ok": True, "item": item}
 
         @app.delete("/delete")
         def delete_file(path: str, _: None = auth) -> dict:
