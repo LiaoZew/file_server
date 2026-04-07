@@ -193,14 +193,42 @@ class FileServer:
   </dialog>
   <script>
     let currentPath = "";
-    const chunkSize = 4 * 1024 * 1024;
-    const parallel = 4;
+    const chunkSize = 8 * 1024 * 1024;
+    const parallel = 6;
+    const fileParallel = 3;
+    const requestTimeoutMs = 120000;
     const logEl = document.getElementById("log");
     const pathEl = document.getElementById("path");
     const msgListEl = document.getElementById("msgList");
 
     function log(msg) {{
       logEl.textContent = `[${{new Date().toLocaleTimeString()}}] ${{msg}}\\n` + logEl.textContent;
+    }}
+
+    function sleep(ms) {{
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }}
+
+    async function fetchWithRetry(url, options = {{}}, retries = 3, timeoutMs = requestTimeoutMs) {{
+      let lastErr = null;
+      for (let attempt = 0; attempt <= retries; attempt++) {{
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {{
+          const resp = await fetch(url, {{ ...options, signal: controller.signal }});
+          clearTimeout(timer);
+          if (resp.ok) return resp;
+          const body = await resp.text();
+          if (attempt === retries) throw new Error(`HTTP ${{resp.status}}: ${{body}}`);
+          await sleep(400 * (attempt + 1));
+        }} catch (e) {{
+          clearTimeout(timer);
+          lastErr = e;
+          if (attempt === retries) break;
+          await sleep(400 * (attempt + 1));
+        }}
+      }}
+      throw lastErr || new Error("request failed");
     }}
 
     function tokenHeaders() {{
@@ -335,7 +363,7 @@ class FileServer:
 
     async function uploadOneFile(file, relPath) {{
       const totalChunks = Math.max(1, Math.ceil(file.size / chunkSize));
-      const initResp = await fetch(`/upload/init${{tokenQuery()}}`, {{
+      const initResp = await fetchWithRetry(`/upload/init${{tokenQuery()}}`, {{
         method: "POST",
         headers: {{ "Content-Type": "application/json", ...tokenHeaders() }},
         body: JSON.stringify({{
@@ -344,10 +372,7 @@ class FileServer:
           chunk_size: chunkSize,
           total_chunks: totalChunks
         }})
-      }});
-      if (!initResp.ok) {{
-        throw new Error("init failed: " + (await initResp.text()));
-      }}
+      }}, 3, 120000);
       const initData = await initResp.json();
       const uploaded = new Set(initData.uploaded_chunks || []);
       let next = 0;
@@ -364,14 +389,11 @@ class FileServer:
           fd.append("upload_id", initData.upload_id);
           fd.append("index", String(idx));
           fd.append("chunk", chunk, file.name + ".part" + idx);
-          const r = await fetch(`/upload/chunk${{tokenQuery()}}`, {{
+          const r = await fetchWithRetry(`/upload/chunk${{tokenQuery()}}`, {{
             method: "POST",
             headers: tokenHeaders(),
             body: fd
-          }});
-          if (!r.ok) {{
-            throw new Error("chunk " + idx + " failed: " + await r.text());
-          }}
+          }}, 5, 180000);
         }}
       }}
       const workers = [];
@@ -379,14 +401,11 @@ class FileServer:
         workers.push(worker());
       }}
       await Promise.all(workers);
-      const doneResp = await fetch(`/upload/complete${{tokenQuery()}}`, {{
+      const doneResp = await fetchWithRetry(`/upload/complete${{tokenQuery()}}`, {{
         method: "POST",
         headers: {{ "Content-Type": "application/json", ...tokenHeaders() }},
         body: JSON.stringify({{ upload_id: initData.upload_id }})
-      }});
-      if (!doneResp.ok) {{
-        throw new Error("complete failed: " + (await doneResp.text()));
-      }}
+      }}, 3, 120000);
     }}
 
     async function uploadFiles() {{
@@ -407,13 +426,31 @@ class FileServer:
       log(`Uploading ${{files.length}} files...`);
       const started = performance.now();
       let done = 0;
-      for (const item of files) {{
-        await uploadOneFile(item.file, item.rel);
-        done += 1;
-        log(`Uploaded ${{done}}/${{files.length}}: ${{item.rel}}`);
+      let failed = 0;
+      let idx = 0;
+      async function fileWorker() {{
+        while (true) {{
+          const current = idx;
+          idx += 1;
+          if (current >= files.length) return;
+          const item = files[current];
+          try {{
+            await uploadOneFile(item.file, item.rel);
+            done += 1;
+            log(`Uploaded ${{done}}/${{files.length}}: ${{item.rel}}`);
+          }} catch (e) {{
+            failed += 1;
+            log(`Failed ${{failed}}: ${{item.rel}} => ${{e}}`);
+          }}
+        }}
       }}
+      const pool = [];
+      for (let i = 0; i < Math.min(fileParallel, files.length); i++) {{
+        pool.push(fileWorker());
+      }}
+      await Promise.all(pool);
       const sec = (performance.now() - started) / 1000;
-      log(`Finished. ${{files.length}} files in ${{sec.toFixed(1)}}s`);
+      log(`Finished. success=${{done}}, failed=${{failed}}, total=${{files.length}}, time=${{sec.toFixed(1)}}s`);
       document.getElementById("fileInput").value = "";
       document.getElementById("folderInput").value = "";
       refreshList();

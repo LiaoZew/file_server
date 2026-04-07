@@ -39,7 +39,13 @@ def main() -> None:
         default=str((Path.cwd() / "data").resolve()),
         help="Storage root directory",
     )
-    parser.add_argument("--token", default="", help="Optional access token")
+    parser.add_argument(
+        "--token",
+        nargs="?",
+        const="",
+        default="",
+        help="Optional access token (can be empty)",
+    )
     args = parser.parse_args()
 
     root_dir = Path(args.root).resolve()

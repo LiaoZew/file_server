@@ -23,7 +23,7 @@ python app.py
 纯 Web 版本（不打开 Flet 窗口）：
 
 ```powershell
-python web_server.py --host 0.0.0.0 --port 8080 --root .\data --token ""
+python web_server.py --host 0.0.0.0 --port 8080 --root .\data
 ```
 
 或使用脚本：
@@ -35,7 +35,7 @@ python web_server.py --host 0.0.0.0 --port 8080 --root .\data --token ""
 Linux 直接运行服务：
 
 ```bash
-python3 web_server.py --host 0.0.0.0 --port 8080 --root ./data --token ""
+python3 web_server.py --host 0.0.0.0 --port 8080 --root ./data
 ```
 
 启动后在 Flet 界面里配置：
@@ -101,6 +101,11 @@ http://<ip>:8080/
 - 生产环境建议放在 Nginx/Caddy 后面，启用 HTTPS。
 - 开启访问令牌（`Access Token`）后，客户端需在 Header `x-token` 或 query `token` 传递令牌。
 - 对公网开放时建议配合防火墙/IP 白名单/限流。
+
+## 8. Linux 上传慢/偶发失败排查
+
+- 建议把 `--root` 放在 Linux 本地文件系统路径（例如 `/home/<user>/data`），不要放在 `/mnt/d/...` 这类 Windows 挂载盘，后者 I/O 明显更慢。
+- 新版本前端已启用分块重试、请求超时控制和多文件并发；若网络不稳定可先减少并发。
 
 ## 7. Linux 单文件打包
 
