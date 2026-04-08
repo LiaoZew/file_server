@@ -178,6 +178,7 @@ class FileServer:
       <input id="folderInput" type="file" webkitdirectory directory multiple />
     </span>
     <button onclick="uploadFiles()">Upload Selected</button>
+    <label><input id="autoUpload" type="checkbox" /> 自动上传</label>
   </div>
   <div id="dropZone">拖拽文件或文件夹到这里上传（保留目录结构）</div>
   <div class="row">
@@ -215,7 +216,11 @@ class FileServer:
     const pathEl = document.getElementById("path");
     const msgListEl = document.getElementById("msgList");
     const dropZone = document.getElementById("dropZone");
+    const autoUploadCheckbox = document.getElementById("autoUpload");
+    const fileInputEl = document.getElementById("fileInput");
+    const folderInputEl = document.getElementById("folderInput");
     let droppedFiles = [];
+    let isUploading = false;
 
     function log(msg) {{
       logEl.textContent = `[${{new Date().toLocaleTimeString()}}] ${{msg}}\\n` + logEl.textContent;
@@ -282,8 +287,24 @@ class FileServer:
           const items = await collectDroppedItems(e.dataTransfer);
           droppedFiles = droppedFiles.concat(items);
           log(`Drop queued: +${{items.length}} files, pending=${{droppedFiles.length}}`);
+          if (autoUploadCheckbox.checked) {{
+            uploadFiles();
+          }}
         }} catch (err) {{
           log("Drop parse failed: " + err);
+        }}
+      }});
+    }}
+
+    function setupAutoUploadHooks() {{
+      fileInputEl.addEventListener("change", () => {{
+        if (autoUploadCheckbox.checked) {{
+          uploadFiles();
+        }}
+      }});
+      folderInputEl.addEventListener("change", () => {{
+        if (autoUploadCheckbox.checked) {{
+          uploadFiles();
         }}
       }});
     }}
@@ -503,6 +524,9 @@ class FileServer:
     }}
 
     async function uploadFiles() {{
+      if (isUploading) {{
+        return;
+      }}
       const files = [];
       const normal = document.getElementById("fileInput").files;
       const folder = document.getElementById("folderInput").files;
@@ -520,6 +544,7 @@ class FileServer:
         log("No files selected");
         return;
       }}
+      isUploading = true;
       log(`Uploading ${{files.length}} files...`);
       const started = performance.now();
       let done = 0;
@@ -541,17 +566,21 @@ class FileServer:
           }}
         }}
       }}
-      const pool = [];
-      for (let i = 0; i < Math.min(fileParallel, files.length); i++) {{
-        pool.push(fileWorker());
+      try {{
+        const pool = [];
+        for (let i = 0; i < Math.min(fileParallel, files.length); i++) {{
+          pool.push(fileWorker());
+        }}
+        await Promise.all(pool);
+        const sec = (performance.now() - started) / 1000;
+        log(`Finished. success=${{done}}, failed=${{failed}}, total=${{files.length}}, time=${{sec.toFixed(1)}}s`);
+        document.getElementById("fileInput").value = "";
+        document.getElementById("folderInput").value = "";
+        droppedFiles = [];
+        refreshList();
+      }} finally {{
+        isUploading = false;
       }}
-      await Promise.all(pool);
-      const sec = (performance.now() - started) / 1000;
-      log(`Finished. success=${{done}}, failed=${{failed}}, total=${{files.length}}, time=${{sec.toFixed(1)}}s`);
-      document.getElementById("fileInput").value = "";
-      document.getElementById("folderInput").value = "";
-      droppedFiles = [];
-      refreshList();
     }}
 
     function openMessageDialog() {{
@@ -623,6 +652,7 @@ class FileServer:
     }}
 
     setupDropZone();
+    setupAutoUploadHooks();
     refreshList();
   </script>
 </body>
