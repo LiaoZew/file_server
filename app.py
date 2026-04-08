@@ -161,7 +161,6 @@ class FileServer:
     <label>Path: <code id="path"></code></label>
   </div>
   <div class="row">
-    <button onclick="goUp()">Up</button>
     <button onclick="refreshList()">Refresh</button>
     <button onclick="openMessageDialog()">消息对话框</button>
     <button onclick="shutdownServer()">关闭服务器</button>
@@ -372,6 +371,32 @@ class FileServer:
       const data = await resp.json();
       const rows = document.getElementById("rows");
       rows.innerHTML = "";
+      if (currentPath) {{
+        const upTr = document.createElement("tr");
+        const upName = document.createElement("td");
+        upName.textContent = "..";
+        upName.style.cursor = "pointer";
+        upName.style.color = "#2563eb";
+        upName.onclick = () => {{
+          const parts = currentPath.split("/").filter(Boolean);
+          parts.pop();
+          currentPath = parts.join("/");
+          refreshList();
+        }};
+        const upType = document.createElement("td");
+        upType.textContent = "dir";
+        const upSize = document.createElement("td");
+        upSize.textContent = "-";
+        const upMtime = document.createElement("td");
+        upMtime.textContent = "-";
+        const upActions = document.createElement("td");
+        upTr.appendChild(upName);
+        upTr.appendChild(upType);
+        upTr.appendChild(upSize);
+        upTr.appendChild(upMtime);
+        upTr.appendChild(upActions);
+        rows.appendChild(upTr);
+      }}
       data.entries.forEach((e) => {{
         const tr = document.createElement("tr");
         const name = document.createElement("td");
@@ -384,13 +409,12 @@ class FileServer:
         mtime.textContent = e.mtime;
         const actions = document.createElement("td");
         if (e.is_dir) {{
-          const openBtn = document.createElement("button");
-          openBtn.textContent = "Open";
-          openBtn.onclick = () => {{
+          name.style.cursor = "pointer";
+          name.style.color = "#2563eb";
+          name.onclick = () => {{
             currentPath = e.rel_path;
             refreshList();
           }};
-          actions.appendChild(openBtn);
           const dlBtn = document.createElement("button");
           dlBtn.textContent = "Zip Download";
           dlBtn.onclick = () => {{
@@ -448,14 +472,6 @@ class FileServer:
         tr.appendChild(actions);
         rows.appendChild(tr);
       }});
-    }}
-
-    function goUp() {{
-      if (!currentPath) return;
-      const parts = currentPath.split("/").filter(Boolean);
-      parts.pop();
-      currentPath = parts.join("/");
-      refreshList();
     }}
 
     async function mkdir() {{
