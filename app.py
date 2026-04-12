@@ -95,8 +95,10 @@ class FileServer:
         self.shutdown_callback = shutdown_callback
         self._msg_lock = threading.Lock()
         self._messages: list[dict] = []
+        self.messages_file = self.root_dir / ".messages.json"
         ensure_dir(self.root_dir)
         ensure_dir(self.session_dir)
+        self._load_messages()
 
         self.app = FastAPI(title="Flet File Server", version="1.0.0")
         self._register_routes()
@@ -111,6 +113,46 @@ class FileServer:
 
     def _token_query(self) -> str:
         return f"&token={self.token}" if self.token else ""
+
+    def _load_messages(self) -> None:
+        if not self.messages_file.exists():
+            self._messages = []
+            return
+        try:
+            with self.messages_file.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, list):
+                self._messages = []
+                return
+            valid: list[dict] = []
+            for item in data[-200:]:
+                if not isinstance(item, dict):
+                    continue
+                text = str(item.get("text", "")).strip()
+                sender = str(item.get("sender", "anonymous")).strip()[:32] or "anonymous"
+                if not text:
+                    continue
+                msg_id = item.get("id")
+                if not isinstance(msg_id, int):
+                    msg_id = int(time.time() * 1000)
+                msg_time = str(item.get("time", "")).strip() or time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+                valid.append(
+                    {
+                        "id": msg_id,
+                        "time": msg_time,
+                        "sender": sender,
+                        "text": text[:1000],
+                    }
+                )
+            self._messages = valid
+        except Exception:
+            self._messages = []
+
+    def _save_messages(self) -> None:
+        temp_path = self.messages_file.with_suffix(self.messages_file.suffix + ".tmp")
+        with temp_path.open("w", encoding="utf-8") as f:
+            json.dump(self._messages[-200:], f, ensure_ascii=False, indent=2)
+        os.replace(temp_path, self.messages_file)
 
     def _register_routes(self) -> None:
         app = self.app
@@ -130,19 +172,19 @@ class FileServer:
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>File Server</title>
   <style>
-    body {{ font-family: "Segoe UI", sans-serif; margin: 16px; }}
-    .row {{ display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }}
-    button {{ padding: 6px 10px; }}
-    table {{ width: 100%; border-collapse: collapse; margin-top: 12px; }}
-    th, td {{ border-bottom: 1px solid #ddd; padding: 8px; text-align: left; }}
+    body {{ font-family: "Segoe UI", sans-serif; margin: 10px; background: #f3f5f8; color: #1f2937; }}
+    .row {{ display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }}
+    button {{ padding: 4px 8px; }}
+    table {{ width: 100%; border-collapse: collapse; margin-top: 8px; }}
+    th, td {{ border-bottom: 1px solid #ddd; padding: 6px; text-align: left; }}
     code {{ background: #f2f2f2; padding: 2px 4px; border-radius: 4px; }}
-    #log {{ white-space: pre-wrap; background: #f7f7f7; padding: 8px; border-radius: 6px; min-height: 72px; }}
+    #log {{ white-space: pre-wrap; background: #f7f7f7; padding: 6px; border-radius: 6px; min-height: 56px; }}
     .file-picker {{ display: inline-flex; align-items: center; gap: 6px; }}
     .file-picker input[type=file] {{ display: none; }}
     .file-picker label {{ padding: 6px 10px; border: 1px solid #aaa; border-radius: 4px; cursor: pointer; }}
     #dropZone {{
-      margin-top: 8px;
-      padding: 16px;
+      margin-top: 6px;
+      padding: 12px;
       border: 2px dashed #999;
       border-radius: 8px;
       background: #fafafa;
@@ -153,6 +195,16 @@ class FileServer:
       border-color: #2563eb;
       background: #eef4ff;
     }}
+    .main-grid {{ display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 8px; margin-top: 8px; }}
+    .main-pane, .side-pane {{ background: #fff; border: 1px solid #d9e0ea; border-radius: 10px; padding: 8px; }}
+    .table-wrap {{ max-height: 520px; overflow: auto; }}
+    .box {{ background: #f8fafc; border: 1px solid #dde5f0; border-radius: 8px; padding: 6px; overflow: auto; }}
+    #msgList {{ max-height: 200px; }}
+    #log {{ max-height: 180px; min-height: 80px; }}
+    #msgInput {{ min-width: 240px; min-height: 72px; }}
+    @media (max-width: 900px) {{
+      .main-grid {{ grid-template-columns: 1fr; }}
+    }}
   </style>
 </head>
 <body>
@@ -161,8 +213,6 @@ class FileServer:
     <label>Path: <code id="path"></code></label>
   </div>
   <div class="row">
-    <button onclick="refreshList()">Refresh</button>
-    <button onclick="openMessageDialog()">消息对话框</button>
     <button onclick="shutdownServer()">关闭服务器</button>
     <input id="mkdirName" placeholder="new folder" />
     <button onclick="mkdir()">Create Folder</button>
@@ -177,49 +227,71 @@ class FileServer:
       <input id="folderInput" type="file" webkitdirectory directory multiple />
     </span>
     <button onclick="uploadFiles()">Upload Selected</button>
-    <label><input id="autoUpload" type="checkbox" /> 自动上传</label>
+    <label><input id="autoUpload" type="checkbox" checked /> 自动上传</label>
+  </div>
+  <div class="row" style="align-items: center;">
+    <progress id="uploadProgress" value="0" max="100" style="width: 320px;"></progress>
+    <span id="uploadProgressText">Idle</span>
   </div>
   <div id="dropZone">拖拽文件或文件夹到这里上传（保留目录结构）</div>
   <div class="row">
     <label>Token:</label>
     <input id="token" value="{token_hint}" placeholder="optional token" />
   </div>
-  <table>
-    <thead>
-      <tr><th>Name</th><th>Type</th><th>Size</th><th>Updated</th><th>Actions</th></tr>
-    </thead>
-    <tbody id="rows"></tbody>
-  </table>
-  <h4>Logs</h4>
-  <div id="log"></div>
-  <dialog id="msgDialog">
-    <h3>消息对话框</h3>
-    <div class="row">
-      <input id="msgSender" placeholder="发送者(可选)" />
-      <button onclick="loadMessages()">刷新消息</button>
-      <button onclick="closeMessageDialog()">关闭</button>
+  <div class="main-grid">
+    <div class="main-pane">
+      <h4>Files</h4>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Name</th><th>Type</th><th>Size</th><th>Updated</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
     </div>
-    <div class="row">
-      <textarea id="msgInput" placeholder="输入消息内容(支持回车换行)" style="min-width: 360px; min-height: 100px;"></textarea>
-      <button onclick="sendMessage()">发送</button>
+    <div class="side-pane">
+      <h4>Messages</h4>
+      <div class="row">
+        <input id="msgSender" placeholder="sender (optional)" />
+      </div>
+      <div class="row">
+        <textarea id="msgInput" placeholder="message text"></textarea>
+        <button onclick="sendMessage()">Send</button>
+      </div>
+      <div id="msgList" class="box"></div>
+      <h4>Logs</h4>
+      <div id="log" class="box"></div>
     </div>
-    <div id="msgList" style="max-height: 240px; overflow: auto; border: 1px solid #ddd; padding: 8px;"></div>
-  </dialog>
+  </div>
   <script>
     let currentPath = "";
     const chunkSize = 8 * 1024 * 1024;
     const parallel = 6;
     const fileParallel = 3;
     const requestTimeoutMs = 120000;
+    const autoRefreshIntervalMs = 3000;
+    const messageRefreshIntervalMs = 3000;
     const logEl = document.getElementById("log");
     const pathEl = document.getElementById("path");
     const msgListEl = document.getElementById("msgList");
     const dropZone = document.getElementById("dropZone");
     const autoUploadCheckbox = document.getElementById("autoUpload");
+    const uploadProgressEl = document.getElementById("uploadProgress");
+    const uploadProgressTextEl = document.getElementById("uploadProgressText");
     const fileInputEl = document.getElementById("fileInput");
     const folderInputEl = document.getElementById("folderInput");
     let droppedFiles = [];
     let isUploading = false;
+    let isRefreshing = false;
+    const uploadProgress = {{
+      totalBytes: 0,
+      uploadedBytes: 0,
+      totalFiles: 0,
+      doneFiles: 0,
+      failedFiles: 0,
+      startedAt: 0,
+    }};
 
     function log(msg) {{
       logEl.textContent = `[${{new Date().toLocaleTimeString()}}] ${{msg}}\\n` + logEl.textContent;
@@ -265,6 +337,56 @@ class FileServer:
       if (!a) return b || "";
       if (!b) return a;
       return (a + "/" + b).replace(/\\/+/g, "/").replace(/\/+/g, "/");
+    }}
+
+    function formatBytes(size) {{
+      const units = ["B", "KB", "MB", "GB", "TB"];
+      let value = Math.max(0, Number(size || 0));
+      let idx = 0;
+      while (value >= 1024 && idx < units.length - 1) {{
+        value /= 1024;
+        idx += 1;
+      }}
+      return `${{value.toFixed(idx === 0 ? 0 : 1)}} ${{units[idx]}}`;
+    }}
+
+    function resetUploadProgress(totalFiles, totalBytes) {{
+      uploadProgress.totalFiles = totalFiles;
+      uploadProgress.totalBytes = Math.max(1, totalBytes);
+      uploadProgress.uploadedBytes = 0;
+      uploadProgress.doneFiles = 0;
+      uploadProgress.failedFiles = 0;
+      uploadProgress.startedAt = performance.now();
+      uploadProgressEl.max = uploadProgress.totalBytes;
+      uploadProgressEl.value = 0;
+      uploadProgressTextEl.textContent = `0.0% (0 B/${{formatBytes(uploadProgress.totalBytes)}}), files 0/${{totalFiles}}`;
+    }}
+
+    function updateUploadProgressText(prefix = "") {{
+      const uploaded = Math.min(uploadProgress.uploadedBytes, uploadProgress.totalBytes);
+      uploadProgressEl.value = uploaded;
+      const percent = ((uploaded * 100) / uploadProgress.totalBytes).toFixed(1);
+      const elapsed = Math.max((performance.now() - uploadProgress.startedAt) / 1000, 0.001);
+      const speed = formatBytes(uploaded / elapsed) + "/s";
+      const finished = uploadProgress.doneFiles + uploadProgress.failedFiles;
+      const text = `${{percent}}% (${{formatBytes(uploaded)}}/${{formatBytes(uploadProgress.totalBytes)}}), files ${{finished}}/${{uploadProgress.totalFiles}}, failed=${{uploadProgress.failedFiles}}, speed=${{speed}}`;
+      uploadProgressTextEl.textContent = prefix ? `${{prefix}} ${{text}}` : text;
+    }}
+
+    function addUploadedBytes(size) {{
+      const n = Number(size || 0);
+      if (n <= 0) return;
+      uploadProgress.uploadedBytes += n;
+      updateUploadProgressText();
+    }}
+
+    function markFileFinished(success) {{
+      if (success) {{
+        uploadProgress.doneFiles += 1;
+      }} else {{
+        uploadProgress.failedFiles += 1;
+      }}
+      updateUploadProgressText();
     }}
 
     function setupDropZone() {{
@@ -361,117 +483,134 @@ class FileServer:
       return out;
     }}
 
-    async function refreshList() {{
-      pathEl.textContent = "/" + currentPath;
-      const resp = await fetch(`/list?path=${{encodeURIComponent(currentPath)}}${{tokenQuery()}}`, {{ headers: tokenHeaders() }});
-      if (!resp.ok) {{
-        log("List failed: " + (await resp.text()));
+    async function refreshList(force = false) {{
+      if (!force && isUploading) {{
         return;
       }}
-      const data = await resp.json();
-      const rows = document.getElementById("rows");
-      rows.innerHTML = "";
-      if (currentPath) {{
-        const upTr = document.createElement("tr");
-        const upName = document.createElement("td");
-        upName.textContent = "..";
-        upName.style.cursor = "pointer";
-        upName.style.color = "#2563eb";
-        upName.onclick = () => {{
-          const parts = currentPath.split("/").filter(Boolean);
-          parts.pop();
-          currentPath = parts.join("/");
-          refreshList();
-        }};
-        const upType = document.createElement("td");
-        upType.textContent = "dir";
-        const upSize = document.createElement("td");
-        upSize.textContent = "-";
-        const upMtime = document.createElement("td");
-        upMtime.textContent = "-";
-        const upActions = document.createElement("td");
-        upTr.appendChild(upName);
-        upTr.appendChild(upType);
-        upTr.appendChild(upSize);
-        upTr.appendChild(upMtime);
-        upTr.appendChild(upActions);
-        rows.appendChild(upTr);
+      if (isRefreshing) {{
+        return;
       }}
-      data.entries.forEach((e) => {{
-        const tr = document.createElement("tr");
-        const name = document.createElement("td");
-        name.textContent = e.name;
-        const type = document.createElement("td");
-        type.textContent = e.is_dir ? "dir" : "file";
-        const size = document.createElement("td");
-        size.textContent = e.human_size;
-        const mtime = document.createElement("td");
-        mtime.textContent = e.mtime;
-        const actions = document.createElement("td");
-        if (e.is_dir) {{
-          name.style.cursor = "pointer";
-          name.style.color = "#2563eb";
-          name.onclick = () => {{
-            currentPath = e.rel_path;
-            refreshList();
-          }};
-          const dlBtn = document.createElement("button");
-          dlBtn.textContent = "Zip Download";
-          dlBtn.onclick = () => {{
-            const p = encodeURIComponent(e.rel_path);
-            window.location.href = `/download-folder?path=${{p}}${{tokenQuery()}}`;
-          }};
-          actions.appendChild(dlBtn);
-          const delDirBtn = document.createElement("button");
-          delDirBtn.textContent = "Delete Folder";
-          delDirBtn.onclick = async () => {{
-            if (!confirm(`Delete folder recursively: ${{e.rel_path}} ?`)) return;
-            const p = encodeURIComponent(e.rel_path);
-            const r = await fetch(`/delete-folder?path=${{p}}${{tokenQuery()}}`, {{
-              method: "DELETE",
-              headers: tokenHeaders()
-            }});
-            if (!r.ok) {{
-              log("Delete folder failed: " + (await r.text()));
-              return;
-            }}
-            log("Deleted folder: " + e.rel_path);
-            refreshList();
-          }};
-          actions.appendChild(delDirBtn);
-        }} else {{
-          const dlBtn = document.createElement("button");
-          dlBtn.textContent = "Download";
-          dlBtn.onclick = () => {{
-            const p = encodeURIComponent(e.rel_path);
-            window.location.href = `/download?path=${{p}}${{tokenQuery()}}`;
-          }};
-          actions.appendChild(dlBtn);
-          const delBtn = document.createElement("button");
-          delBtn.textContent = "Delete";
-          delBtn.onclick = async () => {{
-            if (!confirm(`Delete file: ${{e.rel_path}} ?`)) return;
-            const p = encodeURIComponent(e.rel_path);
-            const r = await fetch(`/delete?path=${{p}}${{tokenQuery()}}`, {{
-              method: "DELETE",
-              headers: tokenHeaders()
-            }});
-            if (!r.ok) {{
-              log("Delete failed: " + (await r.text()));
-              return;
-            }}
-            log("Deleted: " + e.rel_path);
-            refreshList();
-          }};
-          actions.appendChild(delBtn);
+      isRefreshing = true;
+      pathEl.textContent = "/" + currentPath;
+      try {{
+        const resp = await fetch(`/list?path=${{encodeURIComponent(currentPath)}}${{tokenQuery()}}`, {{ headers: tokenHeaders() }});
+        if (!resp.ok) {{
+          log("List failed: " + (await resp.text()));
+          return;
         }}
-        tr.appendChild(name);
-        tr.appendChild(type);
-        tr.appendChild(size);
-        tr.appendChild(mtime);
-        tr.appendChild(actions);
-        rows.appendChild(tr);
-      }});
+        const data = await resp.json();
+        const rows = document.getElementById("rows");
+        rows.innerHTML = "";
+        if (currentPath) {{
+          const upTr = document.createElement("tr");
+          const upName = document.createElement("td");
+          upName.textContent = "..";
+          upName.style.cursor = "pointer";
+          upName.style.color = "#2563eb";
+          upName.onclick = () => {{
+            const parts = currentPath.split("/").filter(Boolean);
+            parts.pop();
+            currentPath = parts.join("/");
+            refreshList();
+          }};
+          const upType = document.createElement("td");
+          upType.textContent = "dir";
+          const upSize = document.createElement("td");
+          upSize.textContent = "-";
+          const upMtime = document.createElement("td");
+          upMtime.textContent = "-";
+          const upActions = document.createElement("td");
+          upTr.appendChild(upName);
+          upTr.appendChild(upType);
+          upTr.appendChild(upSize);
+          upTr.appendChild(upMtime);
+          upTr.appendChild(upActions);
+          rows.appendChild(upTr);
+        }}
+        data.entries.forEach((e) => {{
+          const tr = document.createElement("tr");
+          const name = document.createElement("td");
+          name.textContent = e.name;
+          const type = document.createElement("td");
+          type.textContent = e.is_dir ? "dir" : "file";
+          const size = document.createElement("td");
+          size.textContent = e.human_size;
+          const mtime = document.createElement("td");
+          mtime.textContent = e.mtime;
+          const actions = document.createElement("td");
+          if (e.is_dir) {{
+            name.style.cursor = "pointer";
+            name.style.color = "#2563eb";
+            name.onclick = () => {{
+              currentPath = e.rel_path;
+              refreshList();
+            }};
+            const dlBtn = document.createElement("button");
+            dlBtn.textContent = "Zip Download";
+            dlBtn.onclick = () => {{
+              const p = encodeURIComponent(e.rel_path);
+              window.location.href = `/download-folder?path=${{p}}${{tokenQuery()}}`;
+            }};
+            actions.appendChild(dlBtn);
+            const delDirBtn = document.createElement("button");
+            delDirBtn.textContent = "Delete Folder";
+            delDirBtn.onclick = async () => {{
+              if (!confirm(`Delete folder recursively: ${{e.rel_path}} ?`)) return;
+              const p = encodeURIComponent(e.rel_path);
+              const r = await fetch(`/delete-folder?path=${{p}}${{tokenQuery()}}`, {{
+                method: "DELETE",
+                headers: tokenHeaders()
+              }});
+              if (!r.ok) {{
+                log("Delete folder failed: " + (await r.text()));
+                return;
+              }}
+              log("Deleted folder: " + e.rel_path);
+              refreshList();
+            }};
+            actions.appendChild(delDirBtn);
+          }} else {{
+            const dlBtn = document.createElement("button");
+            dlBtn.textContent = "Download";
+            dlBtn.onclick = () => {{
+              const p = encodeURIComponent(e.rel_path);
+              window.location.href = `/download?path=${{p}}${{tokenQuery()}}`;
+            }};
+            actions.appendChild(dlBtn);
+            const delBtn = document.createElement("button");
+            delBtn.textContent = "Delete";
+            delBtn.onclick = async () => {{
+              if (!confirm(`Delete file: ${{e.rel_path}} ?`)) return;
+              const p = encodeURIComponent(e.rel_path);
+              const r = await fetch(`/delete?path=${{p}}${{tokenQuery()}}`, {{
+                method: "DELETE",
+                headers: tokenHeaders()
+              }});
+              if (!r.ok) {{
+                log("Delete failed: " + (await r.text()));
+                return;
+              }}
+              log("Deleted: " + e.rel_path);
+              refreshList();
+            }};
+            actions.appendChild(delBtn);
+          }}
+          tr.appendChild(name);
+          tr.appendChild(type);
+          tr.appendChild(size);
+          tr.appendChild(mtime);
+          tr.appendChild(actions);
+          rows.appendChild(tr);
+        }});
+      }} finally {{
+        isRefreshing = false;
+      }}
+    }}
+
+    function setupAutoRefresh() {{
+      setInterval(() => {{
+        refreshList();
+      }}, autoRefreshIntervalMs);
     }}
 
     async function mkdir() {{
@@ -506,6 +645,13 @@ class FileServer:
       }}, 3, 120000);
       const initData = await initResp.json();
       const uploaded = new Set(initData.uploaded_chunks || []);
+      let resumedBytes = 0;
+      for (const idx of uploaded) {{
+        const start = idx * chunkSize;
+        if (start >= file.size) continue;
+        resumedBytes += Math.min(chunkSize, file.size - start);
+      }}
+      addUploadedBytes(resumedBytes);
       let next = 0;
       async function worker() {{
         while (true) {{
@@ -520,11 +666,12 @@ class FileServer:
           fd.append("upload_id", initData.upload_id);
           fd.append("index", String(idx));
           fd.append("chunk", chunk, file.name + ".part" + idx);
-          const r = await fetchWithRetry(`/upload/chunk${{tokenQuery()}}`, {{
+          await fetchWithRetry(`/upload/chunk${{tokenQuery()}}`, {{
             method: "POST",
             headers: tokenHeaders(),
             body: fd
           }}, 5, 180000);
+          addUploadedBytes(end - start);
         }}
       }}
       const workers = [];
@@ -560,6 +707,9 @@ class FileServer:
         log("No files selected");
         return;
       }}
+      const totalBytes = files.reduce((sum, item) => sum + Number((item.file && item.file.size) || 0), 0);
+      resetUploadProgress(files.length, totalBytes);
+      updateUploadProgressText("Uploading");
       isUploading = true;
       log(`Uploading ${{files.length}} files...`);
       const started = performance.now();
@@ -575,9 +725,11 @@ class FileServer:
           try {{
             await uploadOneFile(item.file, item.rel);
             done += 1;
+            markFileFinished(true);
             log(`Uploaded ${{done}}/${{files.length}}: ${{item.rel}}`);
           }} catch (e) {{
             failed += 1;
+            markFileFinished(false);
             log(`Failed ${{failed}}: ${{item.rel}} => ${{e}}`);
           }}
         }}
@@ -589,6 +741,7 @@ class FileServer:
         }}
         await Promise.all(pool);
         const sec = (performance.now() - started) / 1000;
+        updateUploadProgressText("Finished");
         log(`Finished. success=${{done}}, failed=${{failed}}, total=${{files.length}}, time=${{sec.toFixed(1)}}s`);
         document.getElementById("fileInput").value = "";
         document.getElementById("folderInput").value = "";
@@ -597,19 +750,6 @@ class FileServer:
       }} finally {{
         isUploading = false;
       }}
-    }}
-
-    function openMessageDialog() {{
-      const dlg = document.getElementById("msgDialog");
-      if (dlg && dlg.showModal) {{
-        dlg.showModal();
-      }}
-      loadMessages();
-    }}
-
-    function closeMessageDialog() {{
-      const dlg = document.getElementById("msgDialog");
-      if (dlg) dlg.close();
     }}
 
     async function loadMessages() {{
@@ -621,7 +761,7 @@ class FileServer:
       const data = await resp.json();
       const items = data.items || [];
       if (!items.length) {{
-        msgListEl.textContent = "暂无消息";
+        msgListEl.textContent = "No messages yet";
         return;
       }}
       msgListEl.innerHTML = "";
@@ -654,6 +794,12 @@ class FileServer:
       await loadMessages();
     }}
 
+    function setupMessageAutoRefresh() {{
+      setInterval(() => {{
+        loadMessages();
+      }}, messageRefreshIntervalMs);
+    }}
+
     async function shutdownServer() {{
       if (!confirm("确认关闭服务器？")) return;
       const resp = await fetch(`/server/shutdown${{tokenQuery()}}`, {{
@@ -669,7 +815,10 @@ class FileServer:
 
     setupDropZone();
     setupAutoUploadHooks();
-    refreshList();
+    setupAutoRefresh();
+    setupMessageAutoRefresh();
+    refreshList(true);
+    loadMessages();
   </script>
 </body>
 </html>
@@ -685,7 +834,7 @@ class FileServer:
 
             entries = []
             for p in target.iterdir():
-                if p.name == ".upload_sessions":
+                if p.name in {".upload_sessions", ".messages.json"}:
                     continue
                 stat = p.stat()
                 rel = p.relative_to(self.root_dir).as_posix()
@@ -725,6 +874,7 @@ class FileServer:
                 self._messages.append(item)
                 if len(self._messages) > 200:
                     self._messages = self._messages[-200:]
+                self._save_messages()
             return {"ok": True, "item": item}
 
         @app.post("/server/shutdown")
