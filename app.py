@@ -1,6 +1,7 @@
-import hashlib
+﻿import hashlib
 import json
 import os
+import stat
 import shutil
 import socket
 import tempfile
@@ -66,6 +67,30 @@ def parse_range_header(range_header: str, file_size: int) -> tuple[int, int]:
         raise HTTPException(status_code=416, detail="Range out of bounds")
     end = min(end, file_size - 1)
     return start, end
+
+
+def remove_tree_strict(path: Path, retries: int = 3, delay_sec: float = 0.2) -> None:
+    def _on_rm_error(func, p, exc_info):
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            func(p)
+        except Exception:
+            raise
+
+    last_err: Optional[Exception] = None
+    for i in range(retries):
+        try:
+            shutil.rmtree(path, onerror=_on_rm_error)
+            return
+        except Exception as e:
+            last_err = e
+            if i < retries - 1:
+                time.sleep(delay_sec * (i + 1))
+            else:
+                raise
+
+    if last_err is not None:
+        raise last_err
 
 
 class UploadInitRequest(BaseModel):
@@ -213,27 +238,27 @@ class FileServer:
     <label>Path: <code id="path"></code></label>
   </div>
   <div class="row">
-    <button onclick="shutdownServer()">关闭服务器</button>
+    <button onclick="shutdownServer()">鍏抽棴鏈嶅姟鍣?/button>
     <input id="mkdirName" placeholder="new folder" />
     <button onclick="mkdir()">Create Folder</button>
   </div>
   <div class="row">
     <span class="file-picker">
-      <label for="fileInput">选择文件</label>
+      <label for="fileInput">閫夋嫨鏂囦欢</label>
       <input id="fileInput" type="file" multiple />
     </span>
     <span class="file-picker">
-      <label for="folderInput">选择文件夹</label>
+      <label for="folderInput">閫夋嫨鏂囦欢澶?/label>
       <input id="folderInput" type="file" webkitdirectory directory multiple />
     </span>
     <button onclick="uploadFiles()">Upload Selected</button>
-    <label><input id="autoUpload" type="checkbox" checked /> 自动上传</label>
+    <label><input id="autoUpload" type="checkbox" checked /> 鑷姩涓婁紶</label>
   </div>
   <div class="row" style="align-items: center;">
     <progress id="uploadProgress" value="0" max="100" style="width: 320px;"></progress>
     <span id="uploadProgressText">Idle</span>
   </div>
-  <div id="dropZone">拖拽文件或文件夹到这里上传（保留目录结构）</div>
+  <div id="dropZone">鎷栨嫿鏂囦欢鎴栨枃浠跺す鍒拌繖閲屼笂浼狅紙淇濈暀鐩綍缁撴瀯锛?/div>
   <div class="row">
     <label>Token:</label>
     <input id="token" value="{token_hint}" placeholder="optional token" />
@@ -331,6 +356,20 @@ class FileServer:
     function tokenQuery() {{
       const token = document.getElementById("token").value.trim();
       return token ? `&token=${{encodeURIComponent(token)}}` : "";
+    }}
+
+    async function readErrorText(resp) {{
+      try {{
+        const data = await resp.json();
+        if (data && data.detail) return String(data.detail);
+      }} catch (_e) {{
+      }}
+      try {{
+        const t = await resp.text();
+        if (t) return t;
+      }} catch (_e) {{
+      }}
+      return `HTTP ${{resp.status}}`;
     }}
 
     function joinPath(a, b) {{
@@ -552,22 +591,22 @@ class FileServer:
               window.location.href = `/download-folder?path=${{p}}${{tokenQuery()}}`;
             }};
             actions.appendChild(dlBtn);
-            const delDirBtn = document.createElement("button");
-            delDirBtn.textContent = "Delete Folder";
-            delDirBtn.onclick = async () => {{
-              if (!confirm(`Delete folder recursively: ${{e.rel_path}} ?`)) return;
-              const p = encodeURIComponent(e.rel_path);
-              const r = await fetch(`/delete-folder?path=${{p}}${{tokenQuery()}}`, {{
-                method: "DELETE",
-                headers: tokenHeaders()
-              }});
-              if (!r.ok) {{
-                log("Delete folder failed: " + (await r.text()));
-                return;
-              }}
-              log("Deleted folder: " + e.rel_path);
-              refreshList();
-            }};
+          const delDirBtn = document.createElement("button");
+          delDirBtn.textContent = "Delete Folder";
+          delDirBtn.onclick = async () => {{
+            if (!confirm(`Delete folder recursively: ${{e.rel_path}} ?`)) return;
+            const p = encodeURIComponent(e.rel_path);
+            const r = await fetch(`/delete-folder?path=${{p}}${{tokenQuery()}}`, {{
+              method: "DELETE",
+              headers: tokenHeaders()
+            }});
+            if (!r.ok) {{
+              log("Delete folder failed: " + (await readErrorText(r)));
+              return;
+            }}
+            log("Deleted folder: " + e.rel_path);
+            refreshList();
+          }};
             actions.appendChild(delDirBtn);
           }} else {{
             const dlBtn = document.createElement("button");
@@ -577,22 +616,22 @@ class FileServer:
               window.location.href = `/download?path=${{p}}${{tokenQuery()}}`;
             }};
             actions.appendChild(dlBtn);
-            const delBtn = document.createElement("button");
-            delBtn.textContent = "Delete";
-            delBtn.onclick = async () => {{
-              if (!confirm(`Delete file: ${{e.rel_path}} ?`)) return;
-              const p = encodeURIComponent(e.rel_path);
-              const r = await fetch(`/delete?path=${{p}}${{tokenQuery()}}`, {{
-                method: "DELETE",
-                headers: tokenHeaders()
-              }});
-              if (!r.ok) {{
-                log("Delete failed: " + (await r.text()));
-                return;
-              }}
-              log("Deleted: " + e.rel_path);
-              refreshList();
-            }};
+          const delBtn = document.createElement("button");
+          delBtn.textContent = "Delete";
+          delBtn.onclick = async () => {{
+            if (!confirm(`Delete file: ${{e.rel_path}} ?`)) return;
+            const p = encodeURIComponent(e.rel_path);
+            const r = await fetch(`/delete?path=${{p}}${{tokenQuery()}}`, {{
+              method: "DELETE",
+              headers: tokenHeaders()
+            }});
+            if (!r.ok) {{
+              log("Delete failed: " + (await readErrorText(r)));
+              return;
+            }}
+            log("Deleted: " + e.rel_path);
+            refreshList();
+          }};
             actions.appendChild(delBtn);
           }}
           tr.appendChild(name);
@@ -801,7 +840,7 @@ class FileServer:
     }}
 
     async function shutdownServer() {{
-      if (!confirm("确认关闭服务器？")) return;
+      if (!confirm("纭鍏抽棴鏈嶅姟鍣紵")) return;
       const resp = await fetch(`/server/shutdown${{tokenQuery()}}`, {{
         method: "POST",
         headers: tokenHeaders()
@@ -914,7 +953,14 @@ class FileServer:
                 raise HTTPException(status_code=400, detail="Only folder deletion is supported")
             if target.resolve() == self.root_dir.resolve():
                 raise HTTPException(status_code=400, detail="Root folder cannot be deleted")
-            shutil.rmtree(target)
+            try:
+                remove_tree_strict(target)
+                if target.exists():
+                    raise OSError("Folder still exists after delete attempt")
+            except PermissionError as e:
+                raise HTTPException(status_code=409, detail=f"Folder is in use: {e}") from e
+            except OSError as e:
+                raise HTTPException(status_code=500, detail=f"Delete folder failed: {e}") from e
             return {"ok": True, "path": rel}
 
         @app.post("/mkdir")
@@ -1337,3 +1383,4 @@ def main(page: ft.Page):
 
 if __name__ == "__main__":
     ft.app(target=main)
+
